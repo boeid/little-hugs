@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Little Hugs</title>
+<!-- The next lines matter only for the web app (iPhone: Share → Add to Home Screen). -->
+<meta name="theme-color" content="#0f6e6a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Little Hugs">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="top"><h1 id="title">Today</h1></header>
+<main id="view"></main>
+<nav id="tabs">
+  <button data-tab="today" class="on"><span>💧</span>Today</button>
+  <button data-tab="meds"><span>💊</span>Medicines</button>
+  <button data-tab="log"><span>📝</span>Log</button>
+  <button data-tab="check"><span>⚠️</span>Interactions</button>
+  <button data-tab="history"><span>📅</span>History</button>
+</nav>
+<div id="scrim" hidden></div>
+<section id="sheet" hidden></section>
+<div id="toast" hidden></div>
+<script src="app.js"></script>
+<script src="sync.js"></script>
+<script>if (location.protocol === 'https:' && 'serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');</script>
+</body>
+</html>
