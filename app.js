@@ -99,7 +99,15 @@ function totals(evs) {
 let tab = 'today';
 let viewDay = startOfDay(Date.now());
 // Shown wherever reminders are listed when Android would deliver them late.
-const exactNote = () => !hasNative ? `<div class="note">This phone cannot ring reminders. They ring on the Android phone that shares this log.</div>`
+// The web app (iPhone) rings them only through a reminder server – see "reminders on an iPhone" in sync.js.
+function webReminderNote() {
+  const s = window.Sync ? Sync.push.state() : 'none';
+  return `<div class="note">${s === 'on' ? `🔔 Reminders ring on this phone. <button class="btn small" data-act="pushTest">Send a test</button> <button class="btn small ghost" data-act="pushOff">Turn off</button>`
+    : s === 'off' ? `Reminders can ring on this phone too. <button class="btn small" data-act="pushOn">Turn on</button>`
+    : s === 'install' ? 'To ring reminders on this phone, add Little Hugs to the Home Screen (Share → Add to Home Screen) and open it from there.'
+    : 'This phone cannot ring reminders. They ring on the Android phone that shares this log.'}</div>`;
+}
+const exactNote = () => !hasNative ? webReminderNote()
   : !Native.exactAlarmsAllowed()
   ? `<div class="note">Android may deliver reminders late until you allow “Alarms &amp; reminders” for this app. <button class="btn small" data-act="askExact">Allow</button></div>` : '';
 const TITLES = { today: hasNative ? Native.appName() : 'Little Hugs', meds: 'Medicines', log: 'Log', check: 'Interaction checker', history: 'History' };
@@ -1069,7 +1077,17 @@ async function syncSave() {
   if (err) { toast(err); return; }
   closeSheet(); tab = 'history'; render(); toast('Shared log is on');
 }
-window.onSyncState = () => { if (tab === 'history' && $('#sheet').hidden) render(); };
+let pushWas = '';
+window.onSyncState = () => {
+  const p = Sync.push.state(), moved = p !== pushWas; pushWas = p;   // the reminder note is on other screens too
+  if ((tab === 'history' || moved) && $('#sheet').hidden) render();
+};
+async function pushSwitch(on) {
+  toast(on ? 'Turning on…' : 'Turning off…');
+  const err = await (on ? Sync.push.on() : Sync.push.off());
+  if ($('#sheet').hidden) render();
+  toast(err ? 'Not done: ' + err : on ? 'Reminders will ring on this phone' : 'Reminders turned off on this phone');
+}
 function exportLog() {
   const q = s => '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"';
   const lines = ['date,time,type,ml,detail,note'];
@@ -1132,6 +1150,9 @@ const actions = {
   syncSave,
   syncNow: () => Sync.now(),
   syncOff: () => { Sync.off(); closeSheet(); render(); toast('Shared log turned off – this phone keeps its copy'); },
+  pushOn: () => pushSwitch(true),
+  pushOff: () => pushSwitch(false),
+  pushTest: async () => { toast('Sending…'); const err = await Sync.push.test(); toast(err ? 'Not sent: ' + err : 'Sent – it should appear in a few seconds'); },
   syncShare: () => {
     const c = Sync.config(), code = `LH1:${c.repo}:${c.token}`;
     const shown = () => openSheet(`<h2>Setup code</h2><p class="muted">Copy this into “Shared log → Set up” on the other phone. Anyone who has this code can read the log, so send it only to the other parent.</p>

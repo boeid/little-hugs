@@ -123,6 +123,101 @@
     }
   }
 
+  // ---- reminders on an iPhone ----
+  /* A web app cannot ring an alarm itself; a small server (BabyCare/worker) sends the notification
+     when a reminder is due. A family that runs such a server puts its address in push.json in
+     their log repository: { url, key, vapid }. Every phone sharing the log then sends the server
+     the reminder schedule, and an iPhone also sends the address it receives notifications at.
+     Without push.json none of this does anything. */
+  const PUSH = 'bc_push', SUB = 'bc_push_sub', DEV = 'bc_dev';
+  let push = null, pushChecked = 0;
+  try { push = JSON.parse(localStorage.getItem(PUSH) || 'null'); } catch (e) { }
+  const keepPush = () => localStorage.setItem(PUSH, JSON.stringify(push));
+  const mySub = () => localStorage.getItem(SUB) || '';
+  function device() {
+    let d = localStorage.getItem(DEV);
+    if (!d) { d = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem(DEV, d); }
+    return d;
+  }
+  const schedule = () => ({
+    tz: -new Date().getTimezoneOffset(),
+    meds: db.meds.filter(m => m.enabled !== false && (m.times || []).length).map(m => ({ name: m.name, dose: m.dose || '', times: m.times })),
+    rems: db.reminders.filter(r => r.enabled !== false).map(r => ({ text: r.text, ts: r.ts, unit: r.unit || '', every: r.every || 1, from: r.from || 0 }))
+  });
+  async function post(path, body) {
+    let r;
+    try {
+      r = await fetch(push.url + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ key: push.key }, body)) });
+    } catch (e) { throw new Error('no internet connection'); }
+    if (!r.ok) throw new Error('the reminder server answered with error ' + r.status);
+    return r.json();
+  }
+  async function syncPush() {
+    // Look for push.json when the app starts, then every 10 minutes until found and every 6 hours after.
+    if (!pushChecked || Date.now() - pushChecked > (push && push.url ? 6 * 3600e3 : 600e3)) {
+      const f = await getFile('push.json');
+      let c = null; try { c = f && JSON.parse(decode(f.b64)); } catch (e) { }
+      pushChecked = Date.now();
+      const had = !!(push && push.url);
+      if (!c || !c.url || !c.key) push = {};
+      else if (!push || push.url !== c.url || push.key !== c.key) push = { url: c.url, key: c.key, vapid: c.vapid };
+      else push.vapid = c.vapid;
+      keepPush();
+      if (had !== !!push.url) changed();
+    }
+    if (!push.url) return;
+    const day = 86400e3, s = JSON.stringify(schedule());
+    if (s !== push.sched || Date.now() - (push.schedAt || 0) > day) {
+      await post('/sched', JSON.parse(s));
+      push.sched = s; push.schedAt = Date.now(); keepPush();
+    }
+    // Sent again once a day, in case the server dropped this phone after a failed delivery.
+    const sub = mySub();
+    if (sub !== (push.sub || '') || (sub && Date.now() - (push.subAt || 0) > day)) {
+      await post('/sub', { id: device(), sub: sub ? JSON.parse(sub) : null });
+      push.sub = sub; push.subAt = Date.now(); keepPush();
+    }
+  }
+  const b64uBytes = s => { const t = atob(s.replace(/-/g, '+').replace(/_/g, '/')), b = new Uint8Array(t.length); for (let i = 0; i < t.length; i++) b[i] = t.charCodeAt(i); return b; };
+  const Push = {
+    // 'none': no server, or this is the Android app (which rings by itself); 'install': open from the Home Screen first;
+    // 'off' / 'on': can ring here, and whether it is turned on.
+    state() {
+      if (hasNative || !cfg || !push || !push.url || !push.vapid) return 'none';
+      if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return 'install';
+      return mySub() && Notification.permission === 'granted' ? 'on' : 'off';
+    },
+    // Both return an error text or ''.
+    async on() {
+      try {
+        if (await Notification.requestPermission() !== 'granted')
+          return 'Notifications are not allowed. Allow them in Settings → Notifications → Little Hugs';
+        const reg = await navigator.serviceWorker.ready;
+        const old = await reg.pushManager.getSubscription();
+        if (old) await old.unsubscribe();   // it may belong to an earlier server key
+        const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uBytes(push.vapid) });
+        localStorage.setItem(SUB, JSON.stringify(sub.toJSON()));
+        await syncPush();
+        return '';
+      } catch (e) { return e.message || String(e); }
+    },
+    async off() {
+      try {
+        const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
+        if (sub) await sub.unsubscribe();
+        localStorage.removeItem(SUB);
+        await syncPush();
+        return '';
+      } catch (e) { return e.message || String(e); }
+    },
+    async test() {
+      try {
+        const r = await post('/test', { sub: JSON.parse(mySub()) });
+        return r.ok ? '' : 'the notification service refused it (' + r.status + ')';
+      } catch (e) { return e.message || String(e); }
+    }
+  };
+
   // ---- the sync itself ----
   async function run() {
     if (!cfg) return;
@@ -142,6 +237,7 @@
       }
       await syncPhotos();
       state.last = Date.now(); state.error = '';
+      try { await syncPush(); } catch (e) { console.log('reminder server: ' + e.message); }   // never blocks the log itself
     } catch (e) {
       state.error = e.message || String(e);
     } finally {
@@ -157,6 +253,7 @@
     now: run,
     soon,
     merge,   // exposed for testing
+    push: Push,
     // Checks that the repository can be opened, then turns the shared log on. Returns an error text or ''.
     async setup(repo, token) {
       const c = { repo, token };
@@ -168,11 +265,16 @@
         if (info.private === false) return 'This repository is public – everyone could read the log. Use a private one';
       } catch (e) { return e.message; }
       cfg = c; localStorage.setItem(KEY, JSON.stringify(c)); localStorage.removeItem(UP);
+      push = null; pushChecked = 0; localStorage.removeItem(PUSH);
       state.error = ''; state.last = 0;
       run();
       return '';
     },
-    off() { cfg = null; localStorage.removeItem(KEY); localStorage.removeItem(UP); clearTimeout(timer); state.error = ''; state.last = 0; }
+    off() {
+      cfg = null; push = null; pushChecked = 0;
+      for (const k of [KEY, UP, PUSH]) localStorage.removeItem(k);
+      clearTimeout(timer); state.error = ''; state.last = 0;
+    }
   };
 
   // Update when the app is opened or comes back to the front, and once a minute while it is in view.
